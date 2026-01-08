@@ -1,0 +1,16 @@
+[Unit]
+Description=Algorand Node Heartbeat Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=zach
+Environment="HEARTBEAT_URL=https://hc-ping.com/YOUR-UUID-HERE"
+ExecStart=/home/zach/heartbeat/heartbeat.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

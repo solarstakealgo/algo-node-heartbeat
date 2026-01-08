@@ -1,0 +1,12 @@
+[Unit]
+Description=Algorand Node Heartbeat Timer
+Requires=heartbeat.service
+
+[Timer]
+OnBootSec=30sec
+OnUnitActiveSec=30sec
+AccuracySec=5sec
+
+[Install]
+WantedBy=timers.target
+

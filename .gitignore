@@ -1,0 +1,13 @@
+# Local configuration overrides
+heartbeat.service.local
+heartbeat.sh.local
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
