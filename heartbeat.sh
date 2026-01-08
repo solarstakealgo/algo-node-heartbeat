@@ -21,6 +21,67 @@ if ! systemctl is-active --quiet algorand.service; then
     exit 0  # Skip heartbeat
 fi
 
+# Step 2a: Check Valar and Reti staking services (optional - only if services exist)
+VALAR_STATUS="not configured"
+RETI_STATUS="not configured"
+FAILURE_REASONS=""
+STAKING_SERVICES_ENABLED=false
+
+# Check Valar service (only if it exists)
+if systemctl list-unit-files valar-daemon.service >/dev/null 2>&1; then
+    STAKING_SERVICES_ENABLED=true
+    if ! systemctl is-active --quiet valar-daemon.service; then
+        VALAR_STATUS="DOWN"
+        FAILURE_REASONS="${FAILURE_REASONS}Valar service is not running. "
+    else
+        # Get Valar uptime
+        VALAR_UPTIME=$(systemctl show valar-daemon.service --property=ActiveEnterTimestamp --value 2>/dev/null | xargs -I {} date -d {} +%s 2>/dev/null)
+        if [ -n "$VALAR_UPTIME" ]; then
+            CURRENT_TIME=$(date +%s)
+            UPTIME_SEC=$((CURRENT_TIME - VALAR_UPTIME))
+            UPTIME_DAYS=$((UPTIME_SEC / 86400))
+            UPTIME_HOURS=$(((UPTIME_SEC % 86400) / 3600))
+            VALAR_STATUS="active (${UPTIME_DAYS}d ${UPTIME_HOURS}h)"
+        else
+            VALAR_STATUS="active"
+        fi
+    fi
+fi
+
+# Check Reti service (only if it exists)
+if systemctl list-unit-files reti.service >/dev/null 2>&1; then
+    STAKING_SERVICES_ENABLED=true
+    if ! systemctl is-active --quiet reti.service; then
+        RETI_STATUS="DOWN"
+        FAILURE_REASONS="${FAILURE_REASONS}Reti service is not running. "
+    else
+        # Get Reti uptime
+        RETI_UPTIME=$(systemctl show reti.service --property=ActiveEnterTimestamp --value 2>/dev/null | xargs -I {} date -d {} +%s 2>/dev/null)
+        if [ -n "$RETI_UPTIME" ]; then
+            CURRENT_TIME=$(date +%s)
+            UPTIME_SEC=$((CURRENT_TIME - RETI_UPTIME))
+            UPTIME_DAYS=$((UPTIME_SEC / 86400))
+            UPTIME_HOURS=$(((UPTIME_SEC % 86400) / 3600))
+            RETI_STATUS="active (${UPTIME_DAYS}d ${UPTIME_HOURS}h)"
+        else
+            RETI_STATUS="active"
+        fi
+    fi
+fi
+
+# If staking services are configured and either is down, send failure signal to Healthchecks.io
+if [ "$STAKING_SERVICES_ENABLED" = "true" ]; then
+    if [[ "$VALAR_STATUS" == "DOWN"* ]] || [[ "$RETI_STATUS" == "DOWN"* ]]; then
+        FAILURE_MSG="Staking Services DOWN: ${FAILURE_REASONS}"
+        curl -fsS -m 10 --retry 5 -o /dev/null \
+          -X POST \
+          -H "Content-Type: text/plain" \
+          -d "${FAILURE_MSG}" \
+          "${HEARTBEAT_URL}/fail"
+        exit 1
+    fi
+fi
+
 # Step 3: Check if node is synced and collect stats
 NODE_STATUS=$(sudo -u algorand ALGORAND_DATA="$ALGORAND_DATA" goal node status)
 LAST_BLOCK_TIME=$(echo "$NODE_STATUS" | grep "Time since last block" | awk '{print $5}')
@@ -78,7 +139,36 @@ if [ "$PARTKEY_COUNT" -eq 0 ]; then
 fi
 
 # Step 5: Prepare stats message
-STATS=$(cat <<EOF
+if [ "$STAKING_SERVICES_ENABLED" = "true" ]; then
+    STATS=$(cat <<EOF
+=== Algorand Node Status ===
+Node Status: OK
+Last Block Time: ${LAST_BLOCK_TIME}s ago
+Last Round: ${LAST_ROUND}
+Sync Time: ${SYNC_TIME}
+Catchup Time: ${CATCHUP_TIME}
+Active Participation Keys: ${PARTKEY_COUNT}
+Service Uptime: ${ALGORAND_UPTIME_STR}
+
+=== Staking Services ===
+Valar: ${VALAR_STATUS}
+Reti: ${RETI_STATUS}
+
+=== System Resources ===
+CPU Usage: ${CPU_USAGE}%
+Memory Usage: ${MEM_USAGE}%
+Memory Available: ${MEM_AVAIL}
+Load Average: ${LOAD_AVG}
+Disk Usage (${ALGORAND_DATA}): ${DISK_USAGE}%
+Disk Available: ${DISK_AVAIL}
+
+=== System Health ===
+Journal Size: ${JOURNAL_SIZE}
+Journal Errors (last 5min): ${JOURNAL_ERRORS}
+EOF
+)
+else
+    STATS=$(cat <<EOF
 === Algorand Node Status ===
 Node Status: OK
 Last Block Time: ${LAST_BLOCK_TIME}s ago
@@ -101,6 +191,7 @@ Journal Size: ${JOURNAL_SIZE}
 Journal Errors (last 5min): ${JOURNAL_ERRORS}
 EOF
 )
+fi
 
 # Step 6: Send heartbeat with stats (if all checks passed)
 # Using healthchecks.io recommended curl options: -fsS -m 10 --retry 5

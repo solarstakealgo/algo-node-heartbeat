@@ -1,6 +1,6 @@
 [Unit]
 Description=Algorand Node Heartbeat Service
-After=network-online.target
+After=network-online.target algorand.service
 Wants=network-online.target
 
 [Service]
@@ -13,4 +13,5 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
+
 

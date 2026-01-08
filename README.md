@@ -8,8 +8,10 @@ A robust heartbeat monitoring script for Algorand nodes that sends health status
   - Verifies Algorand service is running
   - Confirms node is synced (last block < 30 seconds ago)
   - Validates participation keys are registered
+  - **Optional: Monitors Valar and Reti staking services** - Automatically detects if services are configured and sends DOWN alert if either is not running (gracefully skips if not installed)
 - 📊 **Comprehensive Stats**: Sends detailed node and system metrics
   - Node status (last block time, round, sync/catchup times)
+  - Staking services status (Valar and Reti) - only included if services are configured
   - System resources (CPU, memory, disk usage)
   - Service uptime and system load
   - Journal health monitoring
@@ -170,10 +172,14 @@ OnUnitActiveSec=30sec  # Change to your desired interval (e.g., 1min, 5min)
 
 ### Health Check Thresholds
 
-The script skips heartbeat if:
-- Algorand service is not running
-- Last block time > 30 seconds (node not synced)
-- No participation keys registered
+The script behavior:
+- **Sends DOWN alert** if Valar or Reti staking services are configured but not running (automatically detects if services exist)
+- **Skips heartbeat** (no alert) if:
+  - Algorand service is not running
+  - Last block time > 30 seconds (node not synced)
+  - No participation keys registered
+
+**Note**: Valar and Reti monitoring is **optional**. The script automatically detects if these services are installed. If they're not configured, the script works normally without them - perfect for nodes that don't run staking services!
 
 To adjust the sync threshold, edit line 25 in `heartbeat.sh`:
 
