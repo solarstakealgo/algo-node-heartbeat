@@ -300,3 +300,5 @@ For issues or questions:
 ---
 
 **Made for the Algorand community by Algorand node operators** 🚀
+
+**Node Staking**: Stake with [SolarStake](https://app.nf.domains/name/solarstake.algo) on Valar and Reti networks.
