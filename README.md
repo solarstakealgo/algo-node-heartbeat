@@ -17,8 +17,16 @@ A robust heartbeat monitoring script for Algorand nodes that sends health status
   - Journal health monitoring
 - 🔄 **Reliable Delivery**: Follows Healthchecks.io best practices
   - Automatic retry on transient failures
-  - Proper timeouts to prevent hanging
+  - Bounded `goal` and delivery calls so a stuck algod API cannot trap the timer
   - Error handling and logging
+- 🛠️ **Deadlock Recovery**: Optional external watchdog
+  - Requires three consecutive failures before acting
+  - Detects stuck status, participation-key queries, and stale rounds
+  - Captures a private incident bundle at the first anomaly and before recovery
+  - Detects an algod PID or systemd restart-counter change and preserves the
+    preceding crash journal even when the new process is already healthy
+  - Captures a Go goroutine dump before watchdog-initiated recovery
+  - Enforces a ten-minute recovery cooldown to prevent restart loops
 
 ## Prerequisites
 
@@ -84,6 +92,34 @@ Update these lines in `heartbeat.service`:
 - `ExecStart=/home/zach/heartbeat/heartbeat.sh` → Change to your script path
 - `Environment="HEARTBEAT_URL=..."` → Add your Healthchecks.io UUID
 
+To install automatic deadlock recovery as well:
+
+```bash
+sudo install -o root -g root -m 0755 algorand-watchdog.sh /usr/local/sbin/algorand-watchdog.sh
+sudo cp algorand-watchdog.service /etc/systemd/system/
+sudo cp algorand-watchdog.timer /etc/systemd/system/
+sudo mkdir -p /etc/systemd/system/algorand.service.d
+sudo cp algorand-watchdog.conf /etc/systemd/system/algorand.service.d/10-watchdog.conf
+```
+
+The drop-in limits a deadlocked algod shutdown to 20 seconds and disables large
+core files. The watchdog itself sends `SIGQUIT` only after three consecutive
+failures; Go writes goroutine stacks to the journal and systemd's existing
+`Restart=always` policy starts a clean process.
+
+For root-cause diagnostics on a loopback-only algod API, enable the built-in
+deadlock detector and profiler before restarting algod:
+
+```bash
+sudo algocfg set -d /var/lib/algorand -p DeadlockDetection -v 1
+sudo algocfg set -d /var/lib/algorand -p DeadlockDetectionThreshold -v 60
+sudo algocfg set -d /var/lib/algorand -p EnableProfiler -v true
+```
+
+The detector records all goroutine stacks and terminates algod when a lock is
+held beyond the threshold; systemd then restarts it. Profiler endpoints should
+not be enabled when the algod API is exposed to untrusted clients.
+
 #### Option B: Install to User Directory
 
 If you prefer to keep it in your home directory:
@@ -139,6 +175,7 @@ sudo systemctl enable heartbeat.timer
 
 # Start the timer immediately
 sudo systemctl start heartbeat.timer
+sudo systemctl enable --now algorand-watchdog.timer
 
 # Check status
 sudo systemctl status heartbeat.timer
@@ -187,6 +224,58 @@ To adjust the sync threshold, edit line 25 in `heartbeat.sh`:
 SYNCED=$(awk -v t="$LAST_BLOCK_TIME" 'BEGIN {if (t < 30) print "1"; else print "0"}')
 # Change 30 to your desired threshold (in seconds)
 ```
+
+### Watchdog thresholds
+
+The watchdog runs every 30 seconds and recovers algod after three consecutive
+failures (about 90 seconds). Defaults can be overridden in
+`algorand-watchdog.service` with environment variables:
+
+```ini
+[Service]
+Environment="GOAL_TIMEOUT_SECONDS=10"
+Environment="FAILURE_THRESHOLD=3"
+Environment="STALE_ROUND_SECONDS=90"
+Environment="RECOVERY_COOLDOWN_SECONDS=600"
+Environment="INCIDENT_DIR=/var/log/algorand-watchdog"
+Environment="MAX_INCIDENTS=10"
+```
+
+The network check requires Python 3.11+ and a `goal` with `node peers`.
+Three consecutive zero-peer or failed peer checks, or at least three distinct
+catchup cycles in a rolling 120-second window, flag degraded networking even
+while rounds advance. The watchdog counts starts and finishes separately in
+bounded 24 MiB tails of the current algod JSON log and a recently rotated
+archive. At very high log rates this can undercount. An unreadable current log
+also counts as a failed check. Keep info-level catchup logging enabled.
+
+Network degradation creates one incident bundle per episode and places
+`network-degraded` in the watchdog state directory. The normal heartbeat
+skips success delivery while the marker exists, so the existing Healthchecks.io
+missed-ping alert fires after its configured grace period. Three clean checks
+clear it. Network warnings alone never restart algod. When overriding
+`STATE_DIR`, set `WATCHDOG_NETWORK_MARKER` in the heartbeat service to the
+matching path and allow its user to traverse the directory. If permanently
+disabling the watchdog, remove its marker after verifying recovery.
+
+A participation-key timeout alone is not enough to restart algod. It must recur
+for three checks, but the first timeout immediately creates an evidence bundle.
+Recovery events and goroutine dumps are available with:
+
+```bash
+sudo journalctl -u algorand-watchdog.service -u algorand.service
+```
+
+Extended evidence from the ten most recent anomalies, unexpected restarts, and
+recoveries is stored in private, root-readable timestamped directories under
+`/var/log/algorand-watchdog`. Each bundle includes a profiler goroutine snapshot
+when available, the algod and watchdog journals, an extracted deadlock signature,
+per-thread wait channels, systemd exit/restart metadata, a whitelist of relevant
+algod settings, open files, resource state, recent algod logs, and a SHA-256
+manifest. A `github-issue-draft.md` file identifies the exact evidence to include
+and the operator-identifying fields to review before posting publicly.
+Authentication tokens and the complete algod configuration are never written to
+the bundle.
 
 ### Environment Variables
 
@@ -238,7 +327,7 @@ The script exits with code 0 if health checks fail. Check:
 
 3. Are participation keys registered?
    ```bash
-   sudo -u algorand goal account listpartkeys
+   sudo -u algorand timeout 10s goal account listpartkeys
    ```
 
 ### Permission Denied Errors
