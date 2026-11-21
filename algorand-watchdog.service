@@ -1,0 +1,15 @@
+[Unit]
+Description=Algorand deadlock watchdog
+After=network-online.target algorand.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/algorand-watchdog.sh
+TimeoutStartSec=60s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

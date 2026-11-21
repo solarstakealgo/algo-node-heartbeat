@@ -1,0 +1,10 @@
+[Unit]
+Description=Algorand deadlock watchdog timer
+
+[Timer]
+OnBootSec=90sec
+OnUnitActiveSec=30sec
+AccuracySec=5sec
+
+[Install]
+WantedBy=timers.target

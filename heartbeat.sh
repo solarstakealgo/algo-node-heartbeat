@@ -14,7 +14,15 @@ set -euo pipefail
 
 # Step 1: Configuration
 HEARTBEAT_URL="${HEARTBEAT_URL:-https://hc-ping.com/YOUR-UUID-HERE}"
-ALGORAND_DATA="/var/lib/algorand"
+ALGORAND_DATA="${ALGORAND_DATA:-/var/lib/algorand}"
+ALGOD_USER="${ALGOD_USER:-algorand}"
+GOAL_TIMEOUT_SECONDS="${GOAL_TIMEOUT_SECONDS:-10}"
+
+run_goal() {
+    timeout --foreground --signal=TERM --kill-after=2s \
+        "${GOAL_TIMEOUT_SECONDS}s" \
+        sudo -u "$ALGOD_USER" env ALGORAND_DATA="$ALGORAND_DATA" goal "$@"
+}
 
 # Step 2: Check if Algorand service is running
 if ! systemctl is-active --quiet algorand.service; then
@@ -82,9 +90,21 @@ if [ "$STAKING_SERVICES_ENABLED" = "true" ]; then
     fi
 fi
 
+# Core network readiness uses the same missed-heartbeat alert as stale rounds.
+if [[ -e "${WATCHDOG_NETWORK_MARKER:-/run/algorand-watchdog/network-degraded}" ]]; then
+    echo "Skipping heartbeat: watchdog detected degraded algod networking"
+    exit 0
+fi
+
 # Step 3: Check if node is synced and collect stats
-NODE_STATUS=$(sudo -u algorand ALGORAND_DATA="$ALGORAND_DATA" goal node status)
+if ! NODE_STATUS=$(run_goal node status); then
+    exit 0  # Skip heartbeat; the watchdog handles repeated failures.
+fi
 LAST_BLOCK_TIME=$(echo "$NODE_STATUS" | grep "Time since last block" | awk '{print $5}')
+LAST_BLOCK_TIME=${LAST_BLOCK_TIME%s}
+if ! [[ "$LAST_BLOCK_TIME" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    exit 0
+fi
 SYNCED=$(awk -v t="$LAST_BLOCK_TIME" 'BEGIN {if (t < 30) print "1"; else print "0"}')
 if [ "$SYNCED" = "0" ]; then
     exit 0  # Skip heartbeat
@@ -132,8 +152,10 @@ fi
 LOAD_AVG=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//' 2>/dev/null || echo "N/A")
 
 # Step 4: Check for registered participation keys
-PARTKEY_INFO=$(sudo -u algorand ALGORAND_DATA="$ALGORAND_DATA" goal account listpartkeys)
-PARTKEY_COUNT=$(echo "$PARTKEY_INFO" | grep -c "yes")
+if ! PARTKEY_INFO=$(run_goal account listpartkeys); then
+    exit 0  # Skip heartbeat; never let a stuck algod API trap the timer.
+fi
+PARTKEY_COUNT=$(echo "$PARTKEY_INFO" | grep -c "yes" || true)
 if [ "$PARTKEY_COUNT" -eq 0 ]; then
     exit 0  # Skip heartbeat
 fi
@@ -206,4 +228,3 @@ curl -fsS -m 10 --retry 5 -o /dev/null \
   -H "Content-Type: text/plain" \
   -d "${STATS}" \
   "${HEARTBEAT_URL}"
-
